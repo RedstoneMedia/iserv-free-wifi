@@ -13,11 +13,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{Sender};
 use tokio::sync::{RwLock};
+use tokio::sync::mpsc::error::TryRecvError;
 
 const BASE_PORT : u16 = 8181;
 const ISERV_DATA_DIR : &str = "Files/Downloads/temp";
 const AES_KEY : &str = "Balzing fast 🚀💨";
 const ERROR_PREFIX : &str = "|!!-ISERV PROXY ERROR-!!|:";
+const BUNDLE_SIZE : usize = 64;
 
 async fn get_data_from_iserv(client : &Client, from_server : bool) -> Vec<Bytes> {
     let mut acceptable_files = match iserv::get_files(&client, ISERV_DATA_DIR.to_string()).await {
@@ -52,7 +54,7 @@ async fn get_data_from_iserv(client : &Client, from_server : bool) -> Vec<Bytes>
             }).await.unwrap();
             // Read iv from msg
             let mut iv = [0u8; 16];
-            data.copy_to_bytes(16).copy_to_slice(&mut iv);
+            data.copy_to_slice(&mut iv);
             // Decrypt msg
             let plain_data = secure::decrypt(data.as_ref(), AES_KEY, &iv).unwrap();
             Some(Bytes::from(plain_data))
@@ -61,23 +63,33 @@ async fn get_data_from_iserv(client : &Client, from_server : bool) -> Vec<Bytes>
     // Wait until all downloads are complete
     let mut output_data = Vec::with_capacity(output_handles.len());
     for output_handle in output_handles {
-        let value = output_handle.await.unwrap();
-        if value.is_some() {
-            output_data.push(value.unwrap());
+        let value_option = output_handle.await.unwrap();
+        if value_option.is_some() {
+            let mut value = value_option.unwrap();
+            while value.remaining() > 0 {
+                let data_size = value.get_u32();
+                let data = value.copy_to_bytes(data_size as usize);
+                output_data.push(data);
+            }
         }
     }
     output_data
 }
 
-async fn write_data_to_iserv(client : &Client, data : &[u8], from_server : bool) {
+async fn write_data_to_iserv(client : &Client, data : &Vec<Bytes>, from_server : bool) {
     let ms_current = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
     let file_name = match from_server {
         false => format!("0{}.tmp", ms_current),
         true => format!("1{}.tmp", ms_current)
     };
-    let mut bytes = BytesMut::with_capacity(data.len());
+    let mut bytes = BytesMut::new();
+    for d in data {
+        bytes.put_u32(d.len() as u32);
+        bytes.extend(d);
+    }
     // Encrypt msg
-    let (cypher, iv) = secure::encrypt(data, AES_KEY).unwrap();
+    let (cypher, iv) = secure::encrypt(bytes.as_ref(), AES_KEY).unwrap();
+    bytes.clear();
     bytes.extend(&iv);
     bytes.extend(cypher);
     // Upload msg
@@ -89,6 +101,42 @@ async fn write_data_to_iserv(client : &Client, data : &[u8], from_server : bool)
         tokio::time::sleep(tokio::time::Duration::from_millis(100*i)).await;
     }
 
+}
+
+async fn write_bundler(client : Client, from_server : bool, mut receiver: tokio::sync::mpsc::Receiver<Bytes>) {
+    let mut messages_buffer : Vec<Bytes> = Vec::with_capacity(BUNDLE_SIZE);
+    let mut start_time = tokio::time::Instant::now();
+    loop {
+        if (messages_buffer.len() >= BUNDLE_SIZE || start_time.elapsed().as_millis() >= 100) && !messages_buffer.is_empty() {
+            let from_text = match from_server {
+                true => "Server",
+                false => "Client"
+            };
+            println!("[{}] Request Bundler sending : {} requests", from_text, messages_buffer.len());
+            write_data_to_iserv(&client, &messages_buffer, from_server).await;
+            start_time = tokio::time::Instant::now();
+            messages_buffer.clear();
+        }
+
+        messages_buffer.push(match receiver.try_recv() {
+            Ok(v) => v,
+            Err(e) => match e
+            {
+                TryRecvError::Empty => continue,
+                TryRecvError::Disconnected => break
+            }
+        });
+    }
+}
+
+pub fn load_credentials() -> (String, String) {
+    let creds_path = std::path::Path::new("credentials.txt");
+    if !creds_path.is_file() {
+        panic!("Cannot find {:?}", creds_path);
+    }
+    let creds_string = std::fs::read_to_string("credentials.txt").unwrap();
+    let creds_list : Vec<&str> = creds_string.split("\n").collect();
+    (creds_list[0].to_string().replace("\r", ""), creds_list[1].to_string().replace("\r", ""))
 }
 
 type Senders = Arc<RwLock<HashMap<u128, Sender<Bytes>>>>;
@@ -221,7 +269,7 @@ mod test {
 
         stream.write(test_packet.as_ref()).await.unwrap(); // 19, 136
         stream.read(&mut buffer).await.unwrap();
-        stream.write(include_bytes!("req")).await.unwrap();
+        stream.write(include_bytes!("test_req")).await.unwrap();
         let mut file = std::fs::File::create("response.txt").unwrap();
         loop {
             buffer = [0u8; 8000];

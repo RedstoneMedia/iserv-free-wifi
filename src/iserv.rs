@@ -2,13 +2,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 use serde::{Serialize, Deserialize};
 
-const ISERV_USERNAME : &str = "j.laube";
-const ISERV_PWD : &str = include_str!("pwd");
 const ISERV_BASE_URL : &str = "https://hag-iserv.de/iserv";
 
-pub(crate) async fn get_iserv_client() -> Option<reqwest::Client> {
+pub(crate) async fn get_iserv_client(creds : (String, String)) -> Option<reqwest::Client> {
     for i in 0..10 {
-        match _get_iserv_client().await {
+        match _get_iserv_client(&creds.0, &creds.1).await {
             Some(c) => return Some(c),
             None => {}
         }
@@ -17,7 +15,7 @@ pub(crate) async fn get_iserv_client() -> Option<reqwest::Client> {
     None
 }
 
-async fn _get_iserv_client() -> Option<reqwest::Client> {
+async fn _get_iserv_client(username : &str, password : &str) -> Option<reqwest::Client> {
     let client = reqwest::ClientBuilder::new()
         .cookie_store(true)
         .timeout(Duration::from_secs(5))
@@ -33,7 +31,7 @@ async fn _get_iserv_client() -> Option<reqwest::Client> {
         .header("Sec-Fetch-User", "?1")
         .header("Sec-GPC", "1")
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(format!("_username={}&_password={}", ISERV_USERNAME, ISERV_PWD))
+        .body(format!("_username={}&_password={}", username, password))
         .send()
         .await
         .ok()?;
@@ -234,12 +232,13 @@ pub(crate) async fn delete_file(client : &reqwest::Client, path: &String, file_n
 
 #[cfg(test)]
 mod test {
+    use crate::load_credentials;
     use super::*;
 
     #[tokio::test]
     async fn test_upload_download() {
-        let client = get_iserv_client().await.unwrap();
-        let data = include_bytes!("data");
+        let client = get_iserv_client(load_credentials()).await.unwrap();
+        let data = include_bytes!("test_req");
         let mut total_time = tokio::time::Duration::new(0, 0);
         let runs = 20;
         for i in 0..runs {

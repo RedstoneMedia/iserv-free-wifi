@@ -7,10 +7,10 @@ use reqwest::Client;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::mpsc::{Receiver};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::RwLock;
 use crate::socks5::{SocksAddress, SocksCommandType, SocksRequest};
-use crate::{ERROR_PREFIX, get_data_from_iserv, iserv, Senders, write_data_to_iserv};
+use crate::{ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler, write_data_to_iserv};
 
 const BUFFER_SIZE : usize = 256000;
 
@@ -20,7 +20,7 @@ async fn server_send_error_message(client : Client, id : u128, msg : &str) {
     let error_msg = format!("{}{}", ERROR_PREFIX, msg);
     packet.put_u16(error_msg.len() as u16);
     packet.extend(error_msg.as_bytes());
-    write_data_to_iserv(&client, packet.as_ref(), true).await;
+    write_data_to_iserv(&client, &vec![packet.freeze()], true).await;
 }
 
 pub async fn server_get_tcp_target_halfs(request : &SocksRequest) -> Result<(OwnedReadHalf, OwnedWriteHalf), String> {
@@ -44,7 +44,7 @@ pub async fn server_get_tcp_target_halfs(request : &SocksRequest) -> Result<(Own
 }
 
 
-async fn server_answer_requests(request : SocksRequest, id : u128, mut receiver: Receiver<Bytes>, client : Client) {
+async fn server_answer_requests(request : SocksRequest, id : u128, mut receiver: Receiver<Bytes>, client : Client, response_bundler_sender : Sender<Bytes>) {
     match request.command_type {
         SocksCommandType::ConnectTCP => {
             println!("[Server {}] connecting to {:?}", id, request.address);
@@ -75,7 +75,7 @@ async fn server_answer_requests(request : SocksRequest, id : u128, mut receiver:
                     packet.put_u128(id);
                     packet.extend(&buffer[..read_size]);
                     println!("[Server {}] sending to client: {}kb", id, packet.len() as f64 / 1000.0);
-                    write_data_to_iserv(&client, packet.as_ref(), true).await;
+                    response_bundler_sender.send(packet.freeze()).await.unwrap();
                 }
             });
 
@@ -100,9 +100,17 @@ async fn server_answer_requests(request : SocksRequest, id : u128, mut receiver:
 
 pub async fn server() {
     let read_senders: Senders = Arc::new(RwLock::new(HashMap::new()));
-    let client = iserv::get_iserv_client().await.unwrap();
+    let client = iserv::get_iserv_client(load_credentials()).await.unwrap();
     let mut last_request_time = tokio::time::Instant::now();
     println!("[Server] listening");
+
+    // Bundle response from the target and send it to the client as one file
+    let client_copy = client.clone();
+    let (response_bundler_sender, response_bundler_receiver) = tokio::sync::mpsc::channel::<Bytes>(64);
+    tokio::spawn(async move {
+        write_bundler(client_copy, true, response_bundler_receiver).await;
+    });
+
     // Try to get data from client and send it to the correct sender
     loop {
         let random_wait_time = if last_request_time.elapsed().as_secs() > 30 {
@@ -126,9 +134,10 @@ pub async fn server() {
                     read_senders.write().await.insert(id, sender);
                     let client_copy = client.clone();
                     let read_senders_copy = read_senders.clone();
+                    let response_bundler_sender_copy = response_bundler_sender.clone();
                     tokio::spawn(async move {
                         tokio::spawn(async move {
-                            server_answer_requests(request, id, receiver, client_copy).await;
+                            server_answer_requests(request, id, receiver, client_copy, response_bundler_sender_copy).await;
                         }).await;
                         read_senders_copy.write().await.remove(&id);
                     });
