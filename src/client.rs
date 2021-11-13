@@ -3,19 +3,18 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rand::Rng;
-use reqwest::Client;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::mpsc::{Receiver};
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{RwLock};
-use crate::{BASE_PORT, ERROR_PREFIX, get_data_from_iserv, iserv, Senders, write_data_to_iserv};
+use crate::{BASE_PORT, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler};
 
 use crate::socks5::{read_socks_request, socks_handshake, SocksAddress, SocksCommandType, SocksRequest};
 const USE_DIRECT : bool = false;
 
 
-async fn tcp_relay_iserv(mut client_read : OwnedReadHalf, mut client_write : OwnedWriteHalf, request : SocksRequest, mut receiver: Receiver<Bytes>, id : u128, client : Client) {
+async fn tcp_relay_iserv(mut client_read : OwnedReadHalf, mut client_write : OwnedWriteHalf, request : SocksRequest, mut receiver: Receiver<Bytes>, id : u128, sender : Sender<Bytes>) {
     // Relay data from client to server
     let a = tokio::spawn(async move {
         loop {
@@ -27,7 +26,7 @@ async fn tcp_relay_iserv(mut client_read : OwnedReadHalf, mut client_write : Own
             packet.extend(request.to_bytes());
             packet.extend(&buffer[..read_size]);
             println!("[Client] got request: {}kb", packet.len() as f64 / 1000.0);
-            write_data_to_iserv(&client, packet.as_ref(), false).await;
+            sender.send(packet.freeze()).await.unwrap();
         }
     });
 
@@ -88,7 +87,7 @@ async fn tcp_relay_direct(mut client_read : OwnedReadHalf, mut client_write : Ow
     b.await.unwrap();
 }
 
-async fn execute_socks_request(request : SocksRequest, mut stream : TcpStream, current_port : u16, receiver: Receiver<Bytes>, id : u128, client : Client) {
+async fn execute_socks_request(request : SocksRequest, mut stream : TcpStream, current_port : u16, receiver: Receiver<Bytes>, id : u128, sender : Sender<Bytes>) {
     match request.command_type {
         SocksCommandType::ConnectTCP => {
             // Write success response
@@ -108,7 +107,7 @@ async fn execute_socks_request(request : SocksRequest, mut stream : TcpStream, c
             let (client_read, client_write) = stream.into_split();
 
             if !USE_DIRECT {
-                tcp_relay_iserv(client_read, client_write, request, receiver, id, client).await;
+                tcp_relay_iserv(client_read, client_write, request, receiver, id, sender).await;
             } else {
                 tcp_relay_direct(client_read, client_write, request).await;
             }
@@ -127,7 +126,7 @@ async fn execute_socks_request(request : SocksRequest, mut stream : TcpStream, c
 pub async fn client() {
     let recv_senders : Senders = Arc::new(RwLock::new(HashMap::new())); // Maybe use generational arena instead of hash map
     let senders_clone = recv_senders.clone();
-    let client = iserv::get_iserv_client().await.unwrap();
+    let client = iserv::get_iserv_client(load_credentials()).await.unwrap();
     let client_copy = client.clone();
     println!("[Client] listening");
     // Try to get data from server and send it to the correct sender
@@ -151,12 +150,19 @@ pub async fn client() {
         }
     });
 
+    // Bundle requests from the client and send it to the server as one file
+    let client_copy = client.clone();
+    let (request_bundler_sender, request_bundler_receiver) = tokio::sync::mpsc::channel::<Bytes>(64);
+    tokio::spawn(async move {
+        write_bundler(client_copy, false, request_bundler_receiver).await;
+    });
+
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), BASE_PORT)).await.unwrap();
     let mut counter = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as u128;
     while let Ok((mut stream, address)) = listener.accept().await {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         recv_senders.write().await.insert(counter, sender);
-        let client_copy = client.clone();
+        let request_bundler_copy = request_bundler_sender.clone();
         tokio::spawn(async move {
             println!("[Client] Connection from : {}", address);
             if !socks_handshake(&mut stream).await {return}
@@ -172,7 +178,7 @@ pub async fn client() {
                 _ => {}
             }
             println!("[Client] socks request {:?}", request);
-            execute_socks_request(request, stream, address.port(), receiver, counter, client_copy).await;
+            execute_socks_request(request, stream, address.port(), receiver, counter, request_bundler_copy).await;
         });
         counter += 1;
     }

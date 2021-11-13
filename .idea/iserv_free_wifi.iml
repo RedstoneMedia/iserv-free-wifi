@@ -52,6 +52,11 @@
       <sourceFolder url="file://$MODULE_DIR$/target/debug/build/syn-401ee52b2f61116c/out" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/target/debug/build/ring-6383fbc64b9d4d70/out" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/target/debug/build/winapi-ada5da208925b1eb/out" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/target/debug/build/futures-channel-57a71160e9f73b2a/out" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/target/debug/build/futures-macro-36045ef62771cb26/out" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/target/debug/build/futures-task-6d4bd9fe4afa0816/out" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/target/debug/build/futures-util-8925e8ccd1cdd320/out" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/target/debug/build/proc-macro-nested-e001b817f4b69b66/out" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
