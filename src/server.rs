@@ -8,9 +8,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock};
 use crate::socks5::{SocksAddress, SocksCommandType, SocksRequest};
-use crate::{ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler, write_data_to_iserv};
+use crate::{delete_handler, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler, write_data_to_iserv};
 
 const BUFFER_SIZE : usize = 256000;
 
@@ -111,6 +111,13 @@ pub async fn server() {
         write_bundler(client_copy, true, response_bundler_receiver).await;
     });
 
+    let delete_files = Arc::new(RwLock::new(Vec::new()));
+    let delete_files_clone = delete_files.clone();
+    let client_copy = client.clone();
+    tokio::spawn(async move {
+        delete_handler(client_copy, delete_files_clone).await;
+    });
+
     // Try to get data from client and send it to the correct sender
     loop {
         let random_wait_time = if last_request_time.elapsed().as_secs() > 30 {
@@ -120,7 +127,9 @@ pub async fn server() {
             rand::thread_rng().gen_range(300..800)
         };
         tokio::time::sleep(tokio::time::Duration::from_millis(random_wait_time)).await;
-        for mut data in get_data_from_iserv(&client, false).await {
+        let (data_vec, new_delete_files) = get_data_from_iserv(&client, false, &delete_files.read().await.to_vec()).await;
+        delete_files.write().await.extend(new_delete_files);
+        for mut data in data_vec {
             last_request_time = tokio::time::Instant::now();
             let id = data.get_u128();
             let request = SocksRequest::from_bytes(&mut data);
