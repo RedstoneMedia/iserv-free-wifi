@@ -15,9 +15,9 @@ use tokio::sync::mpsc::{Sender};
 use tokio::sync::{RwLock};
 use tokio::sync::mpsc::error::TryRecvError;
 
-const BASE_PORT : u16 = 8181;
+const BASE_PORT : u16 = 3182;
 const ISERV_DATA_DIR : &str = "Files/Downloads/temp";
-const AES_KEY : &str = "Balzing fast 🚀💨";
+const AES_KEY : &str = "Balzing fast 🚀💨"; // TODO: Save in credentials.txt
 const ERROR_PREFIX : &str = "|!!-ISERV PROXY ERROR-!!|:";
 const BUNDLE_SIZE : usize = 64;
 
@@ -29,7 +29,7 @@ async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files 
     acceptable_files.retain(|f| {
         let current_unix_time = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap();
         let file_creation_time = std::time::Duration::from_micros(f.name.text[1..].replace(".tmp", "").parse().unwrap());
-        let is_new = (current_unix_time - file_creation_time).as_secs() < 90;
+        let is_new = (current_unix_time.as_secs() as i128 - file_creation_time.as_secs() as i128) < 90;
         let marked_as_delete = delete_files.iter().find(|df| &df.0 == f.path.get("link").unwrap() && df.1 == f.name.text).is_some();
         match from_server {
             false => f.name.text.starts_with("0") && is_new && f.name.text.ends_with(".tmp") && !marked_as_delete,
