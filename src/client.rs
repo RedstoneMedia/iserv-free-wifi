@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{RwLock};
-use crate::{BASE_PORT, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler};
+use crate::{BASE_PORT, delete_handler, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler};
 
 use crate::socks5::{read_socks_request, socks_handshake, SocksAddress, SocksCommandType, SocksRequest};
 const USE_DIRECT : bool = false;
@@ -129,12 +129,22 @@ pub async fn client() {
     let client = iserv::get_iserv_client(load_credentials()).await.unwrap();
     let client_copy = client.clone();
     println!("[Client] listening");
+
     // Try to get data from server and send it to the correct sender
     tokio::spawn(async move {
+        let delete_files = Arc::new(RwLock::new(Vec::new()));
+        let deleted_files_copy = delete_files.clone();
+        let delete_client_copy = client_copy.clone();
+        tokio::spawn(async move {
+            delete_handler(delete_client_copy, deleted_files_copy).await;
+        });
+
         loop {
             let random_wait_time = rand::thread_rng().gen_range(100..500);
             tokio::time::sleep(tokio::time::Duration::from_millis(random_wait_time)).await;
-            for mut data in get_data_from_iserv(&client_copy, true).await {
+            let (data_vec, new_delete_files) = get_data_from_iserv(&client_copy, true, &delete_files.read().await.clone().to_vec().clone()).await;
+            delete_files.write().await.extend(new_delete_files);
+            for mut data in data_vec {
                 let id = data.get_u128();
                 let id_to_remove = match senders_clone.read().await.get(&id) {
                     Some(sender) => {
@@ -169,7 +179,7 @@ pub async fn client() {
             let request = read_socks_request(&mut stream).await;
             match &request.address {
                 SocksAddress::DomainName(d) => {
-                    if d.contains("firefox") || d.contains("mozilla") {
+                    if d.contains("firefox") {
                         stream.write(&[5, 2, 0, 0]).await.unwrap();
                         stream.shutdown().await.unwrap();
                         return;

@@ -21,37 +21,35 @@ const AES_KEY : &str = "Balzing fast 🚀💨";
 const ERROR_PREFIX : &str = "|!!-ISERV PROXY ERROR-!!|:";
 const BUNDLE_SIZE : usize = 64;
 
-async fn get_data_from_iserv(client : &Client, from_server : bool) -> Vec<Bytes> {
+async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files : &Vec<(String, String)>) -> (Vec<Bytes>, Vec<(String, String)>) {
     let mut acceptable_files = match iserv::get_files(&client, ISERV_DATA_DIR.to_string()).await {
         Ok(response) => response.files,
-        Err(e) => {eprintln!("{}", e); return vec![];}
+        Err(e) => {eprintln!("{}", e); return (vec![], vec![]);}
     };
     acceptable_files.retain(|f| {
+        let current_unix_time = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        let file_creation_time = std::time::Duration::from_micros(f.name.text[1..].replace(".tmp", "").parse().unwrap());
+        let is_new = (current_unix_time - file_creation_time).as_secs() < 90;
+        let marked_as_delete = delete_files.iter().find(|df| &df.0 == f.path.get("link").unwrap() && df.1 == f.name.text).is_some();
         match from_server {
-            false => f.name.text.starts_with("0") && f.name.text.ends_with(".tmp"),
-            true => f.name.text.starts_with("1") && f.name.text.ends_with(".tmp")
+            false => f.name.text.starts_with("0") && is_new && f.name.text.ends_with(".tmp") && !marked_as_delete,
+            true => f.name.text.starts_with("1") && is_new && f.name.text.ends_with(".tmp") && !marked_as_delete
         }
     });
 
+    let mut delete_files = Vec::new();
     let mut output_handles = Vec::with_capacity(acceptable_files.len());
     for f in acceptable_files {
+        let file_path = f.path.get("link").unwrap().clone();
+        let file_name = f.name.text.clone();
+        delete_files.push((file_path.clone(), file_name.clone()));
         let client_copy = client.clone();
         output_handles.push(tokio::spawn(async move {
-            let file_path= f.name.link.replace("?show=true", "");
-            let mut data = match iserv::download_data(&client_copy, &file_path).await {
+            let file_url= f.name.link.replace("?show=true", "");
+            let mut data = match iserv::download_data(&client_copy, &file_url).await {
                 Ok(data) => data,
                 Err(e) => {eprintln!("{}", e); return None}
             };
-            // Delete later
-            tokio::spawn(async move {
-                for i in 0..3 {
-                    match iserv::delete_file(&client_copy, f.path.get("link").unwrap(), &f.name.text).await {
-                        Ok(_) => break,
-                        Err(e) => println!("Retry {} because of error : {}", i, e)
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100*i)).await;
-                }
-            }).await.unwrap();
             // Read iv from msg
             let mut iv = [0u8; 16];
             data.copy_to_slice(&mut iv);
@@ -73,7 +71,7 @@ async fn get_data_from_iserv(client : &Client, from_server : bool) -> Vec<Bytes>
             }
         }
     }
-    output_data
+    (output_data, delete_files)
 }
 
 async fn write_data_to_iserv(client : &Client, data : &Vec<Bytes>, from_server : bool) {
@@ -126,6 +124,34 @@ async fn write_bundler(client : Client, from_server : bool, mut receiver: tokio:
                 TryRecvError::Disconnected => break
             }
         });
+    }
+}
+
+/// Tries to read from a list of files and bulk deletes them. After the deletion is done the deleted files are removed from the list.
+async fn delete_handler(client : Client, to_delete_files : Arc<tokio::sync::RwLock<Vec<(String, String)>>>) {
+    loop {
+        let delete_files_read = to_delete_files.read().await;
+        let to_delete_files_copy = delete_files_read.to_vec();
+        std::mem::drop(delete_files_read);
+        if to_delete_files_copy.len() > 1 {
+            let path : &String = &to_delete_files_copy[0].0;
+            println!("Deleting: {:?}", to_delete_files_copy);
+            for i in 0..3 {
+                match iserv::delete_files(&client,
+                                          &path,
+                                          to_delete_files_copy.iter()
+                                              .map(|(_, name)| name)
+                                              .collect()).await
+                {
+                    Ok(_) => break,
+                    Err(e) => println!("Retrying delete {} because of error : {}", i, e)
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100*i)).await;
+            }
+        } else {continue}
+        // Remove deleted files from to_delete_files
+        let mut to_delete_files_write = to_delete_files.write().await;
+        to_delete_files_write.retain(|v| !to_delete_files_copy.contains(v));
     }
 }
 

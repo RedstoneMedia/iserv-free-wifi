@@ -191,7 +191,7 @@ pub(crate) async fn download_data(client : &reqwest::Client, iserv_path: &String
     Ok(bytes)
 }
 
-pub(crate) async fn delete_file(client : &reqwest::Client, path: &String, file_name : &String) -> Result<(), String> {
+pub(crate) async fn delete_files(client : &reqwest::Client, path: &String, file_names : Vec<&String>) -> Result<(), String> {
     let path = path.replace("/iserv/file/-/", "");
     let files_url = format!("{}/file/-/{}", ISERV_BASE_URL, path);
     // Get from_token
@@ -206,20 +206,27 @@ pub(crate) async fn delete_file(client : &reqwest::Client, path: &String, file_n
         form_token = document.select(&selector).next().unwrap().value().attr("value").unwrap().to_string();
     }
 
-    // Send remove request
-    let form_encoded = form_urlencoded::Serializer::new(String::new())
-        .append_pair("form[files][]", &base64::encode(format!("{}/{}", path, file_name)))
-        .append_pair("form[path]", &path)
-        .append_pair("form[current_search]", "")
-        .append_pair("form[confirm]", "1")
-        .append_pair("form[action]",  "delete")
-        .append_pair("form[actions][confirm]",  "")
-        .append_pair("form[_token]",  &form_token)
-        .finish();
+    let form_body : String;
+    {
+        // Create remove requests args
+        let mut form_encoded_serializer = form_urlencoded::Serializer::new(String::new());
+        for file_name in file_names {
+            form_encoded_serializer.append_pair("form[files][]", &base64::encode(format!("{}/{}", path, file_name)));
+        }
+        form_body = form_encoded_serializer
+            .append_pair("form[path]", &path)
+            .append_pair("form[current_search]", "")
+            .append_pair("form[confirm]", "1")
+            .append_pair("form[action]",  "delete")
+            .append_pair("form[actions][confirm]",  "")
+            .append_pair("form[_token]",  &form_token)
+            .finish();
+    }
 
+    // Send remove request
     let response = client.post(format!("{}/file/multiaction", ISERV_BASE_URL))
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(form_encoded)
+        .body(form_body)
         .send()
         .await
         .or_else(|e| Err(e.to_string()))?;
