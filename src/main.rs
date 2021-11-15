@@ -155,6 +155,15 @@ async fn delete_handler(client : Client, to_delete_files : Arc<tokio::sync::RwLo
     }
 }
 
+async fn cleanup(client : &Client) {
+    let files = iserv::get_files(&client, ISERV_DATA_DIR.to_string()).await.unwrap();
+    let file_names : Vec<&String> = files.files.iter().map(|f| &f.name.text).collect();
+    if file_names.len() > 1 {
+        let file_path = files.files[0].path.get("link").unwrap().clone();
+        iserv::delete_files(client, &file_path, file_names).await;
+    }
+}
+
 pub fn load_credentials() -> (String, String) {
     let creds_path = std::path::Path::new("credentials.txt");
     if !creds_path.is_file() {
