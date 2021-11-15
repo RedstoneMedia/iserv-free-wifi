@@ -105,6 +105,7 @@ async fn write_bundler(client : Client, from_server : bool, mut receiver: tokio:
     let mut messages_buffer : Vec<Bytes> = Vec::with_capacity(BUNDLE_SIZE);
     let mut start_time = tokio::time::Instant::now();
     loop {
+        tokio::time::sleep(tokio::time::Duration::from_millis(40)).await;
         if (messages_buffer.len() >= BUNDLE_SIZE || start_time.elapsed().as_millis() >= 100) && !messages_buffer.is_empty() {
             let from_text = match from_server {
                 true => "Server",
@@ -115,21 +116,24 @@ async fn write_bundler(client : Client, from_server : bool, mut receiver: tokio:
             start_time = tokio::time::Instant::now();
             messages_buffer.clear();
         }
-
-        messages_buffer.push(match receiver.try_recv() {
-            Ok(v) => v,
-            Err(e) => match e
-            {
-                TryRecvError::Empty => continue,
-                TryRecvError::Disconnected => break
-            }
-        });
+        // Read all messages until the receiver is empty
+        loop {
+            messages_buffer.push(match receiver.try_recv() {
+                Ok(v) => v,
+                Err(e) => match e
+                {
+                    TryRecvError::Empty => break,
+                    TryRecvError::Disconnected => break
+                }
+            });
+        }
     }
 }
 
 /// Tries to read from a list of files and bulk deletes them. After the deletion is done the deleted files are removed from the list.
 async fn delete_handler(client : Client, to_delete_files : Arc<tokio::sync::RwLock<Vec<(String, String)>>>) {
     loop {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let delete_files_read = to_delete_files.read().await;
         let to_delete_files_copy = delete_files_read.to_vec();
         std::mem::drop(delete_files_read);
@@ -148,10 +152,10 @@ async fn delete_handler(client : Client, to_delete_files : Arc<tokio::sync::RwLo
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(100*i)).await;
             }
+            // Remove deleted files from to_delete_files
+            let mut to_delete_files_write = to_delete_files.write().await;
+            to_delete_files_write.retain(|v| !to_delete_files_copy.contains(v));
         } else {continue}
-        // Remove deleted files from to_delete_files
-        let mut to_delete_files_write = to_delete_files.write().await;
-        to_delete_files_write.retain(|v| !to_delete_files_copy.contains(v));
     }
 }
 
