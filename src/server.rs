@@ -10,17 +10,17 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{RwLock};
 use crate::socks5::{SocksAddress, SocksCommandType, SocksRequest};
-use crate::{delete_handler, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler, write_data_to_iserv};
+use crate::{delete_handler, ERROR_PREFIX, get_data_from_iserv, iserv, iserv_data_dir, load_credentials, Senders, write_bundler, write_data_to_iserv};
 
 const BUFFER_SIZE : usize = 256000;
 
-async fn server_send_error_message(client : Client, id : u128, msg : &str) {
+async fn server_send_error_message(client : Client, id : u128, msg : &str, iserv_data_dir : &String) {
     let mut packet = BytesMut::new();
     packet.put_u128(id);
     let error_msg = format!("{}{}", ERROR_PREFIX, msg);
     packet.put_u16(error_msg.len() as u16);
     packet.extend(error_msg.as_bytes());
-    write_data_to_iserv(&client, &vec![packet.freeze()], true).await;
+    write_data_to_iserv(&client, &vec![packet.freeze()], true, iserv_data_dir).await;
 }
 
 pub async fn server_get_tcp_target_halfs(request : &SocksRequest) -> Result<(OwnedReadHalf, OwnedWriteHalf), String> {
@@ -52,7 +52,8 @@ async fn server_answer_requests(request : SocksRequest, id : u128, mut receiver:
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[Server {}] Connection error : {}", id, e);
-                    server_send_error_message(client, id, &e.to_string()).await;
+                    let iserv_data_dir = iserv_data_dir(&client).await;
+                    server_send_error_message(client, id, &e.to_string(), &iserv_data_dir).await;
                     return;
                 }
             };
@@ -61,15 +62,16 @@ async fn server_answer_requests(request : SocksRequest, id : u128, mut receiver:
             // Relay data from target to client
             let a = tokio::spawn(async move {
                 loop {
+                    let iserv_data_dir = iserv_data_dir(&client).await;
                     let mut buffer = [0u8; BUFFER_SIZE];
                     let read_size = match tokio::time::timeout(tokio::time::Duration::from_millis(90000), target_read.read(&mut buffer)).await {
                         Ok(Ok(s)) => s,
-                        Ok(Err(e)) => {server_send_error_message(client, id, &e.to_string()).await; return;},
-                        Err(_) => {server_send_error_message(client, id, "Timeout").await; return;}
+                        Ok(Err(e)) => {server_send_error_message(client, id, &e.to_string(), &iserv_data_dir).await; return;},
+                        Err(_) => {server_send_error_message(client, id, "Timeout", &iserv_data_dir).await; return;}
                     };
                     if read_size == 0 {
                         println!("[Server {}] close", id);
-                        server_send_error_message(client, id, "Close").await; return;
+                        server_send_error_message(client, id, "Close", &iserv_data_dir).await; return;
                     }
                     let mut packet = BytesMut::new();
                     packet.put_u128(id);
@@ -134,6 +136,7 @@ pub async fn server() {
             let id = data.get_u128();
             let request = SocksRequest::from_bytes(&mut data);
             let senders_reader = read_senders.read().await;
+
             let sender = match senders_reader.get(&id) {
                 Some(s) => s,
                 None => {
@@ -144,6 +147,7 @@ pub async fn server() {
                     let client_copy = client.clone();
                     let read_senders_copy = read_senders.clone();
                     let response_bundler_sender_copy = response_bundler_sender.clone();
+                    #[allow(unused_must_use)]
                     tokio::spawn(async move {
                         tokio::spawn(async move {
                             server_answer_requests(request, id, receiver, client_copy, response_bundler_sender_copy).await;
