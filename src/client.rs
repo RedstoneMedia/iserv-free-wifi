@@ -7,8 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{RwLock};
-use crate::{BASE_PORT, cleanup, delete_handler, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler};
+use tokio::sync::RwLock;
+use crate::{BASE_PORT, delete_handler, ERROR_PREFIX, get_data_from_iserv, iserv, load_credentials, Senders, write_bundler, cleanup};
 
 use crate::socks5::{read_socks_request, socks_handshake, SocksAddress, SocksCommandType, SocksRequest};
 const USE_DIRECT : bool = false;
@@ -127,11 +127,18 @@ pub async fn client() {
     let recv_senders : Senders = Arc::new(RwLock::new(HashMap::new())); // Maybe use generational arena instead of hash map
     let senders_clone = recv_senders.clone();
     let client = iserv::get_iserv_client(load_credentials()).await.unwrap();
+    // Make sure to cleanup
     let client_copy = client.clone();
-    cleanup(&client).await;
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        println!("[Client] Cleaning up");
+        cleanup(&client_copy).await;
+        std::process::exit(-1);
+    });
     println!("[Client] listening");
 
     // Try to get data from server and send it to the correct sender
+    let client_copy = client.clone();
     tokio::spawn(async move {
         let delete_files = Arc::new(RwLock::new(Vec::new()));
         let deleted_files_copy = delete_files.clone();

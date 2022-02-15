@@ -8,24 +8,43 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use rand::{Rng, RngCore, SeedableRng};
 use reqwest::Client;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{Sender};
-use tokio::sync::{RwLock};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc::error::TryRecvError;
+use once_cell::sync::Lazy;
+
+type Senders = Arc<RwLock<HashMap<u128, Sender<Bytes>>>>;
 
 const BASE_PORT : u16 = 3182;
-const ISERV_DATA_DIR : &str = "Files/Downloads/temp";
+const ISERV_BASE_DATA_DIR : &str = "Files/Downloads";
 const AES_KEY : &str = "Balzing fast 🚀💨"; // TODO: Save in credentials.txt
 const ERROR_PREFIX : &str = "|!!-ISERV PROXY ERROR-!!|:";
 const BUNDLE_SIZE : usize = 64;
+const FOLDER_NAME_OFFSET : u64 = 42069;
+const FOLDER_CHANGE_MINUTES : u16 = 60;
+
+static ISERV_DATA_DIRS: Lazy<tokio::sync::Mutex<Vec<String>>> = Lazy::new(|| {
+    tokio::sync::Mutex::new(vec![])
+});
 
 async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files : &Vec<(String, String)>) -> (Vec<Bytes>, Vec<(String, String)>) {
-    let mut acceptable_files = match iserv::get_files(&client, ISERV_DATA_DIR.to_string()).await {
-        Ok(response) => response.files,
-        Err(e) => {eprintln!("{}", e); return (vec![], vec![]);}
-    };
+    let mut acceptable_files = vec![];
+    {
+        iserv_data_dir(&client).await; // Just to update ISERV_DATA_DIRS
+        let iserv_data_dirs = ISERV_DATA_DIRS.lock().await;
+        for iserv_data_dir in iserv_data_dirs.iter() {
+            acceptable_files.append(&mut match iserv::get_files(&client, iserv_data_dir.clone()).await {
+                Ok(response) => response.files,
+                Err(e) => {eprintln!("{}", e); vec![]}
+            });
+        }
+    }
+    if acceptable_files.is_empty() { return (vec![], vec![]); }
+    println!("{:?}", acceptable_files);
     acceptable_files.retain(|f| {
         let current_unix_time = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap();
         let file_creation_time = std::time::Duration::from_micros(f.name.text[1..].replace(".tmp", "").parse().unwrap());
@@ -74,7 +93,7 @@ async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files 
     (output_data, delete_files)
 }
 
-async fn write_data_to_iserv(client : &Client, data : &Vec<Bytes>, from_server : bool) {
+async fn write_data_to_iserv(client : &Client, data : &Vec<Bytes>, from_server : bool, iserv_data_dir : &str) {
     let ms_current = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros();
     let file_name = match from_server {
         false => format!("0{}.tmp", ms_current),
@@ -92,7 +111,7 @@ async fn write_data_to_iserv(client : &Client, data : &Vec<Bytes>, from_server :
     bytes.extend(cypher);
     // Upload msg
     for i in 0..3 {
-        match iserv::upload_file(&client, ISERV_DATA_DIR.to_string(), file_name.clone(), bytes.as_ref(), false).await {
+        match iserv::upload_file(&client, iserv_data_dir.to_string(), file_name.clone(), bytes.as_ref(), false).await {
             Ok(_) => break,
             Err(e) => eprintln!("Retry {} because of error: {}", i, e)
         }
@@ -112,7 +131,7 @@ async fn write_bundler(client : Client, from_server : bool, mut receiver: tokio:
                 false => "Client"
             };
             println!("[{}] Request Bundler sending : {} requests", from_text, messages_buffer.len());
-            write_data_to_iserv(&client, &messages_buffer, from_server).await;
+            write_data_to_iserv(&client, &messages_buffer, from_server, &iserv_data_dir(&client).await).await;
             start_time = tokio::time::Instant::now();
             messages_buffer.clear();
         }
@@ -159,13 +178,56 @@ async fn delete_handler(client : Client, to_delete_files : Arc<tokio::sync::RwLo
     }
 }
 
-async fn cleanup(client : &Client) {
-    let files = iserv::get_files(&client, ISERV_DATA_DIR.to_string()).await.unwrap();
-    let file_names : Vec<&String> = files.files.iter().map(|f| &f.name.text).collect();
-    if file_names.len() > 1 {
-        let file_path = files.files[0].path.get("link").unwrap().clone();
-        iserv::delete_files(client, &file_path, file_names).await;
+async fn relay_to(domain: &str, dst_port: u16) {
+    let mut stream = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), BASE_PORT)).await.unwrap();
+    // Create listener
+    let mut port: u16 = dst_port;
+    let listener = loop {
+        match tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)).await {
+            Ok(l) => break l,
+            Err(_) => {}
+        }
+        port = rand::thread_rng().gen_range(49152..65535);
+    };
+    // Do handshake
+    let mut buffer = [0u8; 8000];
+    stream.write(&[5, 0, 0]).await.unwrap();
+    stream.read(&mut buffer).await.unwrap();
+    let mut request_packet = BytesMut::new();
+    request_packet.extend(&[5, 1, 0, 3]);
+    request_packet.put_u8(domain.len() as u8);
+    request_packet.extend(domain.as_bytes());
+    request_packet.put_u16(dst_port);
+    // Send socks request packet
+    stream.write(request_packet.as_ref()).await.unwrap();
+    stream.read(&mut buffer).await.unwrap();
+    println!("[Relay] Relay to {}:{} is available on 127.0.0.1:{}", domain, dst_port, port);
+    // Relay data to socks client
+    if let Ok((relay_stream, _)) = listener.accept().await {
+        let (mut relay_stream_read_half, mut relay_stream_write_half) = relay_stream.into_split();
+        let (mut stream_read_half, mut stream_write_half) = stream.into_split();
+        // Relay from local application to socks client
+        let a = tokio::spawn(async move {
+            loop {
+                let mut buffer = [0u8; 8000];
+                let size = relay_stream_read_half.read(&mut buffer).await.unwrap();
+                if size == 0 { break; }
+                stream_write_half.write(&buffer).await.unwrap();
+            }
+        });
+        // Relay from socks client to local application
+        let b = tokio::spawn(async move {
+            loop {
+                let mut buffer = [0u8; 8000];
+                let size = stream_read_half.read(&mut buffer).await.unwrap();
+                if size == 0 { break; }
+                relay_stream_write_half.write(&buffer).await.unwrap();
+            }
+        });
+        a.await.unwrap();
+        b.await.unwrap();
     }
+    println!("[Relay] Stopped");
 }
 
 pub fn load_credentials() -> (String, String) {
@@ -178,11 +240,70 @@ pub fn load_credentials() -> (String, String) {
     (creds_list[0].to_string().replace("\r", ""), creds_list[1].to_string().replace("\r", ""))
 }
 
-type Senders = Arc<RwLock<HashMap<u128, Sender<Bytes>>>>;
+#[allow(unused_must_use)]
+async fn cleanup(client : &Client) {
+    let iserv_data_dirs = ISERV_DATA_DIRS.lock().await;
+    for iserv_data_dir in iserv_data_dirs.iter() {
+        let files = iserv::get_files(&client,iserv_data_dir.clone()).await.unwrap();
+        let file_names : Vec<&String> = files.files.iter().map(|f| &f.name.text).collect();
+        if file_names.len() > 1 {
+            let file_path = files.files[0].path.get("link").unwrap().clone();
+            iserv::delete_files(client, &file_path, file_names).await;
+        }
+    }
+}
+
+// IServ Data Directory stuff
+
+pub fn get_time_dependant_folder_name(offset: u64) -> String {
+    let seed = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() / (60 * FOLDER_CHANGE_MINUTES as u64);
+    let mut rng = rand::rngs::StdRng::seed_from_u64(offset + seed);
+    let mut n = rng.next_u32().to_string();
+    let mut replacements = ["con", "down", "fig", "ja", "va", "ta", "bin", "up", "load", "date"].map(|s| s.to_string());
+    for _ in 0..3 { replacements[rng.gen_range(0..10)] += "-"; }
+    for (i, r) in replacements.iter().enumerate() {
+        n = n.replace(&i.to_string(), &r);
+    }
+    return n.trim_end_matches("-").replace("--", "-").to_string();
+}
+
+#[allow(unused_must_use)]
+async fn remove_iserv_data_dir(client : &Client, iserv_data_dir : &str) {
+    iserv::get_files(&client, iserv_data_dir.to_string()).await.unwrap(); // Just to make sure that the directory actually exists
+    let iserv_data_dir_split = iserv_data_dir.split("/").collect::<Vec<&str>>();
+    // Delete folder
+    iserv::delete_files(
+        client,
+        &iserv_data_dir_split[0..iserv_data_dir_split.len()-1].join("/"),
+        vec![&iserv_data_dir_split.last().unwrap().to_string()]
+    ).await.or_else(|_| {eprintln!("Could not remove folder: {}", iserv_data_dir); Err(())});
+}
+
+/// Gets the current iserv data dir and creates new ones if it is necessary
+async fn iserv_data_dir(client: &Client) -> String {
+    let folder_name = get_time_dependant_folder_name(FOLDER_NAME_OFFSET);
+    let iserv_data_dir = format!("{}/{}", ISERV_BASE_DATA_DIR, folder_name);
+    let mut iserv_data_dirs = ISERV_DATA_DIRS.lock().await;
+    if iserv_data_dirs.contains(&iserv_data_dir) {
+        return iserv_data_dir;
+    } else if iserv_data_dirs.len() == 2 {
+        let old_dir = iserv_data_dirs.remove(0);
+        println!("[*] Removing old folder: {}", old_dir);
+        remove_iserv_data_dir(client, &old_dir).await;
+    }
+    println!("[*] Creating new folder: {}", iserv_data_dir);
+    for i in 0..3 {
+        match iserv::create_folder_structure(&client, &iserv_data_dir).await {
+            Ok(_) => break,
+            Err(e) => {eprintln!("Cannot create folder: {} Try: {}/3", e, i+1)}
+        }
+    }
+    iserv_data_dirs.push(iserv_data_dir.clone());
+    iserv_data_dir
+}
 
 #[tokio::main]
 async fn main() {
-    use std::io::Write;
 
     let matches = clap::App::new("IServ Free WiFi")
         .arg(clap::Arg::with_name("server")
@@ -193,64 +314,45 @@ async fn main() {
             .short("c")
             .long("client")
             .takes_value(false))
-        .arg(clap::Arg::with_name("request")
+        .arg(clap::Arg::with_name("relay")
             .short("r")
-            .long("request")
+            .long("relay")
             .required(false)
-            .value_name("path")
+            .help("Sets up a local realy to forward data to the specified domain")
+            .value_name("relay domain")
             .takes_value(true))
-        .arg(clap::Arg::with_name("domain")
-            .short("d")
-            .long("domain")
+        .arg(clap::Arg::with_name("port")
+            .short("p")
+            .long("port")
             .required(false)
-            .value_name("domain")
+            .value_name("port")
             .takes_value(true))
         .get_matches();
 
-    if let Some(path) = matches.value_of("request") {
-        let domain = matches.value_of("domain").unwrap();
+    if let Some(domain) = matches.value_of("relay") {
+        let dst_port: u16 = matches.value_of("port").unwrap().parse().unwrap();
         let c = tokio::spawn(async {
             client::client().await;
         });
-
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let mut stream = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), BASE_PORT)).await.unwrap();
-        let mut buffer = [0u8; 8000];
-        stream.write(&[5, 0, 0]).await.unwrap();
-        stream.read(&mut buffer).await.unwrap();
-
-        // Do handshake
-        let mut request_packet = BytesMut::new();
-        request_packet.extend(&[5, 1, 0, 3]);
-        request_packet.put_u8(domain.len() as u8);
-        request_packet.extend(domain.as_bytes());
-        request_packet.put_u16(80);
-        // Send socks request packet
-        stream.write(request_packet.as_ref()).await.unwrap();
-        stream.read(&mut buffer).await.unwrap();
-
-        // Connection is established now send data
-        let request_data = std::fs::read(path).unwrap();
-        stream.write(request_data.as_slice()).await.unwrap();
-        // Write output to file
-        let mut file = std::fs::File::create("response.txt").unwrap();
-        loop {
-            buffer = [0u8; 8000];
-            let size = stream.read(&mut buffer).await.unwrap();
-            if size == 0 {break;}
-            std::fs::File::write(&mut file, &buffer[..size]).unwrap();
-        }
+        relay_to(domain, dst_port).await;
         c.abort();
         return;
     }
 
     match (matches.is_present("server"), matches.is_present("client")) {
         (true, false) => {
-            let s = tokio::spawn(async {
-                server::server().await;
-            });
-            s.await.unwrap();
+            loop {
+                let s = tokio::spawn(async {
+                    server::server().await;
+                });
+                let result = s.await;
+                match result {
+                    Ok(_) => {break},
+                    Err(e) => eprintln!("[Server] SERVER exited on error: {}, restarting in one Minute", e)
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            }
         },
         (false, true) => {
             let c = tokio::spawn(async {

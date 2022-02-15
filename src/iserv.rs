@@ -194,7 +194,7 @@ pub(crate) async fn download_data(client : &reqwest::Client, iserv_path: &String
 pub(crate) async fn delete_files(client : &reqwest::Client, path: &String, file_names : Vec<&String>) -> Result<(), String> {
     let path = path.replace("/iserv/file/-/", "");
     let files_url = format!("{}/file/-/{}", ISERV_BASE_URL, path);
-    // Get from_token
+    // Get form_token
     let response = client.get(files_url)
         .send()
         .await
@@ -237,6 +237,59 @@ pub(crate) async fn delete_files(client : &reqwest::Client, path: &String, file_
     Ok(())
 }
 
+pub(crate) async fn create_folder_structure(client : &reqwest::Client, path: &String) -> Result<(), String> {
+    let components = path.split("/").collect::<Vec<&str>>();
+    for (i, component) in components.iter().enumerate() {
+        if i == 0 {continue} // First component is always a folder that cannot be deleted so it makes no sense to recreate it
+        match create_folder(client, &components[0..i].join("/"), &component.to_string()).await {
+            Ok(_) => {},
+            Err(s) => if !s.contains("error decoding response body") {return Err(s)}
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn create_folder(client : &reqwest::Client, path: &String, folder_name : &String) -> Result<(), String> {
+    // Get file_factory_token
+    let response = client.get(format!("{}/file/add/folder", ISERV_BASE_URL))
+        .send()
+        .await
+        .or_else(|e| Err(e.to_string()))?;
+    let file_factory_token : String;
+    {
+        let document = scraper::Html::parse_document(&response.text().await.or_else(|e| Err(e.to_string()))?);
+        let selector = scraper::selector::Selector::parse("#file_factory__token").unwrap();
+        file_factory_token = document.select(&selector).next().unwrap().value().attr("value").unwrap().to_string();
+    }
+    // Construct request data
+    let form_encoded = form_urlencoded::Serializer::new(String::new())
+        .append_pair("file_factory[item][name]", &folder_name)
+        .append_pair("file_factory[path]", &path)
+        .append_pair("file_factory[_token]", &file_factory_token)
+        .append_pair("file_factory[submit]", "")
+        .finish();
+    // Send request to create folder
+    let response = client.post(format!("{}/file/add/folder", ISERV_BASE_URL))
+        .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header("X-Requested-With", "XMLHttpRequest")
+        .body(form_encoded)
+        .send()
+        .await
+        .or_else(|e| Err(e.to_string()))?;
+    // Check if operation was successful
+    let status_code = response.status();
+    if !status_code.is_success() {
+        return Err(format!("Status code was {}", status_code));
+    }
+    let json_response : serde_json::Map<String, serde_json::Value> = response.json().await.or_else(|e| Err(e.to_string()))?;
+    if json_response.get("status").ok_or("No such key: status".to_string())?.as_str().ok_or("status is not a string".to_string())? == "success" {
+        Ok(())
+    } else {
+        Err("Status was not success".to_string())
+    }
+
+}
+
 #[cfg(test)]
 mod test {
     use crate::load_credentials;
@@ -262,6 +315,13 @@ mod test {
         let avg_download_and_upload_time = total_time.as_secs_f64() / runs as f64;
         let size_kb = data.len() as f64 / 1000.0;
         println!("Download and upload of {}kb took: {}s; That makes : {:.3}kb/s", size_kb, avg_download_and_upload_time, size_kb / avg_download_and_upload_time);
+    }
+
+    #[tokio::test]
+    async fn test_create_folder() {
+        let client = get_iserv_client(load_credentials()).await.unwrap();
+        create_folder_structure(&client, &"Files/Downloads/test/test2/test3/test4".to_string()).await.unwrap();
+        delete_files(&client, &"Files/Downloads/test/test2/test3".to_string(), vec![&"test4".to_string()]).await.unwrap();
     }
 
 }
