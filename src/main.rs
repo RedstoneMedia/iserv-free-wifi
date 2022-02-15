@@ -44,7 +44,6 @@ async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files 
         }
     }
     if acceptable_files.is_empty() { return (vec![], vec![]); }
-    println!("{:?}", acceptable_files);
     acceptable_files.retain(|f| {
         let current_unix_time = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap();
         let file_creation_time = std::time::Duration::from_micros(f.name.text[1..].replace(".tmp", "").parse().unwrap());
