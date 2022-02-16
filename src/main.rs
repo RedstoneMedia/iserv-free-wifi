@@ -156,19 +156,30 @@ async fn delete_handler(client : Client, to_delete_files : Arc<tokio::sync::RwLo
         let to_delete_files_copy = delete_files_read.to_vec();
         std::mem::drop(delete_files_read);
         if to_delete_files_copy.len() > 1 {
-            let path : &String = &to_delete_files_copy[0].0;
-            println!("Deleting: {:?}", to_delete_files_copy);
-            for i in 0..3 {
-                match iserv::delete_files(&client,
-                                          &path,
-                                          to_delete_files_copy.iter()
-                                              .map(|(_, name)| name)
-                                              .collect()).await
-                {
-                    Ok(_) => break,
-                    Err(e) => println!("Retrying delete {} because of error : {}", i, e)
+            // Split files by path
+            let mut to_delete_files_split : Vec<(String, Vec<&String>)> = vec![];
+            for file_to_delete in &to_delete_files_copy {
+                match to_delete_files_split.iter_mut().find(|p| &p.0 == &file_to_delete.0) {
+                    Some(path_files) => {
+                        path_files.1.push(&file_to_delete.1);
+                    },
+                    None => {
+                        to_delete_files_split.push((file_to_delete.0.clone(), vec![&file_to_delete.1]))
+                    }
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(100*i)).await;
+            }
+            println!("Deleting: {:?}", to_delete_files_split);
+            for path_files in to_delete_files_split {
+                let path = path_files.0;
+                for i in 0..3 {
+                    match iserv::delete_files(&client,
+                                              &path, path_files.1.clone()).await
+                    {
+                        Ok(_) => break,
+                        Err(e) => println!("Retrying delete {} because of error : {}", i, e)
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100*i)).await;
+                }
             }
             // Remove deleted files from to_delete_files
             let mut to_delete_files_write = to_delete_files.write().await;
