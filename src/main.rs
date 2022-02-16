@@ -15,13 +15,13 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::error::TryRecvError;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 
 type Senders = Arc<RwLock<HashMap<u128, Sender<Bytes>>>>;
 
 const BASE_PORT : u16 = 3182;
 const ISERV_BASE_DATA_DIR : &str = "Files/Downloads";
-const AES_KEY : &str = "Balzing fast 🚀💨"; // TODO: Save in credentials.txt
+static AES_KEY : OnceCell<String> = OnceCell::new();
 const ERROR_PREFIX : &str = "|!!-ISERV PROXY ERROR-!!|:";
 const BUNDLE_SIZE : usize = 64;
 const FOLDER_NAME_OFFSET : u64 = 42069;
@@ -30,6 +30,7 @@ const FOLDER_CHANGE_MINUTES : u16 = 60;
 static ISERV_DATA_DIRS: Lazy<tokio::sync::Mutex<Vec<String>>> = Lazy::new(|| {
     tokio::sync::Mutex::new(vec![])
 });
+
 
 async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files : &Vec<(String, String)>) -> (Vec<Bytes>, Vec<(String, String)>) {
     let mut acceptable_files = vec![];
@@ -72,7 +73,7 @@ async fn get_data_from_iserv(client : &Client, from_server : bool, delete_files 
             let mut iv = [0u8; 16];
             data.copy_to_slice(&mut iv);
             // Decrypt msg
-            let plain_data = secure::decrypt(data.as_ref(), AES_KEY, &iv).unwrap();
+            let plain_data = secure::decrypt(data.as_ref(), AES_KEY.get().unwrap(), &iv).unwrap();
             Some(Bytes::from(plain_data))
         }));
     }
@@ -104,7 +105,7 @@ async fn write_data_to_iserv(client : &Client, data : &Vec<Bytes>, from_server :
         bytes.extend(d);
     }
     // Encrypt msg
-    let (cypher, iv) = secure::encrypt(bytes.as_ref(), AES_KEY).unwrap();
+    let (cypher, iv) = secure::encrypt(bytes.as_ref(), AES_KEY.get().unwrap()).unwrap();
     bytes.clear();
     bytes.extend(&iv);
     bytes.extend(cypher);
@@ -247,6 +248,9 @@ pub fn load_credentials() -> (String, String) {
     }
     let creds_string = std::fs::read_to_string("credentials.txt").unwrap();
     let creds_list : Vec<&str> = creds_string.split("\n").collect();
+    AES_KEY.get_or_init(|| {
+        creds_list.get(2).expect("Credentials did not contain AES key").to_string().replace("\r", "")
+    });
     (creds_list[0].to_string().replace("\r", ""), creds_list[1].to_string().replace("\r", ""))
 }
 
