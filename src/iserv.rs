@@ -23,7 +23,7 @@ async fn _get_iserv_client(username : &str, password : &str) -> Option<reqwest::
         .build()
         .unwrap();
 
-    let response = client.post(format!("{}/login", ISERV_BASE_URL))
+    let response = client.post(format!("{}/auth/login", ISERV_BASE_URL))
         .header("Upgrade-Insecure-Requests", "1")
         .header("Sec-Fetch-Dest", "document")
         .header("Sec-Fetch-Mode", "navigate")
@@ -40,7 +40,7 @@ async fn _get_iserv_client(username : &str, password : &str) -> Option<reqwest::
         return None;
     }
     let text = response.text().await.ok()?;
-    if text.contains("Anmeldung fehlgeschlagen!") {
+    if text.contains("Anmeldung fehlgeschlagen!") || text.contains("IServ-Anmeldung") {
         return None;
     }
     Some(client)
@@ -119,7 +119,7 @@ pub(crate) async fn upload_file(client : &reqwest::Client, path: String, file_na
         let selector = scraper::selector::Selector::parse("#upload__token").unwrap();
         upload_token = document.select(&selector).next().unwrap().value().attr("value").unwrap().to_string();
     }
-    let uuid = uuid::Uuid::new_v4().to_hyphenated().to_string();
+    let uuid = uuid::Uuid::new_v4().hyphenated().to_string();
 
     // Check
     if no_overwrite {
@@ -300,21 +300,23 @@ mod test {
         let client = get_iserv_client(load_credentials()).await.unwrap();
         let data = include_bytes!("test_req");
         let mut total_time = tokio::time::Duration::new(0, 0);
-        let runs = 20;
-        for i in 0..runs {
+        let runs = 10;
+        create_folder_structure(&client, &"Files/Downloads/test".to_string()).await.expect("Could not create test directory");
+        for _ in 0..runs {
             let start = tokio::time::Instant::now();
             upload_file(&client, "Files/Downloads/test".to_string(), "test.txt".to_string(), data, false).await.unwrap();
             let files = get_files(&client, "Files/Downloads/test".to_string()).await.unwrap();
-            let file_path = files.files.first().unwrap().name.link.replace("?show=true", "");
+            let file_path = files.files.first().expect("File was not uploaded").name.link.replace("?show=true", "");
             let downloaded_data = download_data(&client, &file_path).await.unwrap();
             let dur = start.elapsed();
             println!("Download and upload of {}kb took: {}ms", data.len() as f64 / 1000.0, dur.as_millis());
             total_time = total_time + dur;
-            assert_eq!(downloaded_data.as_ref(), data)
+            assert_eq!(String::from_utf8_lossy(downloaded_data.as_ref()), String::from_utf8_lossy(data));
         }
         let avg_download_and_upload_time = total_time.as_secs_f64() / runs as f64;
         let size_kb = data.len() as f64 / 1000.0;
         println!("Download and upload of {}kb took: {}s; That makes : {:.3}kb/s", size_kb, avg_download_and_upload_time, size_kb / avg_download_and_upload_time);
+        delete_files(&client, &"Files/Downloads/".to_string(), vec![&"test".to_string()]).await.expect("Could not remove test directory");
     }
 
     #[tokio::test]
@@ -322,6 +324,7 @@ mod test {
         let client = get_iserv_client(load_credentials()).await.unwrap();
         create_folder_structure(&client, &"Files/Downloads/test/test2/test3/test4".to_string()).await.unwrap();
         delete_files(&client, &"Files/Downloads/test/test2/test3".to_string(), vec![&"test4".to_string()]).await.unwrap();
+        delete_files(&client, &"Files/Downloads/".to_string(), vec![&"test".to_string()]).await.expect("Could not remove test directory");
     }
 
 }

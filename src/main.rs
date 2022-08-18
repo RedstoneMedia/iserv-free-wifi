@@ -321,22 +321,26 @@ async fn main() {
 
     let matches = clap::App::new("IServ Free WiFi")
         .arg(clap::Arg::with_name("server")
-            .short("s")
+            .short('s')
             .long("server")
             .takes_value(false))
         .arg(clap::Arg::with_name("client")
-            .short("c")
+            .short('c')
             .long("client")
             .takes_value(false))
         .arg(clap::Arg::with_name("relay")
-            .short("r")
+            .short('r')
             .long("relay")
             .required(false)
-            .help("Sets up a local realy to forward data to the specified domain")
+            .help("Sets up a local relay to forward data to the specified domain")
             .value_name("relay domain")
             .takes_value(true))
+        .group(clap::ArgGroup::new("mode")
+            .required(true)
+            .args(&["server", "client", "relay"])
+        )
         .arg(clap::Arg::with_name("port")
-            .short("p")
+            .short('p')
             .long("port")
             .required(false)
             .value_name("port")
@@ -385,55 +389,6 @@ async fn main() {
             s.await.unwrap();
             c.await.unwrap();
         },
-        (false, false) => println!("{}", matches.usage())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::io::Write;
-    use std::net::{Ipv4Addr, SocketAddrV4};
-    use bytes::BufMut;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
-
-    #[tokio::test]
-    async fn test_html_request() {
-        let c = tokio::spawn(async {
-            client::client().await;
-        });
-
-        let s = tokio::spawn(async {
-            server::server().await;
-        });
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let mut stream = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), BASE_PORT)).await.unwrap();
-        let mut buffer = [0u8; 8000];
-        stream.write(&[5, 0, 0]).await.unwrap();
-        stream.read(&mut buffer).await.unwrap();
-
-        let mut test_packet = BytesMut::new();
-        test_packet.extend(&[5, 1, 0, 3]);
-        let domain = "192.168.178.67";
-        test_packet.put_u8(domain.len() as u8);
-        test_packet.extend(domain.as_bytes());
-        test_packet.put_u16(5000);
-
-        stream.write(test_packet.as_ref()).await.unwrap(); // 19, 136
-        stream.read(&mut buffer).await.unwrap();
-        stream.write(include_bytes!("test_req")).await.unwrap();
-        let mut file = std::fs::File::create("response.txt").unwrap();
-        loop {
-            buffer = [0u8; 8000];
-            let size = stream.read(&mut buffer).await.unwrap();
-            if size == 0 {break;}
-            std::fs::File::write(&mut file, &buffer[..size]).unwrap();
-        }
-
-        s.abort();
-        c.abort();
+        _ => unreachable!()
     }
 }
