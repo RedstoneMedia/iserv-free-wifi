@@ -23,11 +23,13 @@ It should only be used if you know what you are doing and have permission to do 
 
 ## How to set up with Firefox
 
-I would suggest using an extension like [FoxyProxy](https://addons.mozilla.org/en-US/firefox/addon/foxyproxy-standard/).\
+Using an extension like [FoxyProxy](https://addons.mozilla.org/en-US/firefox/addon/foxyproxy-standard/) is advised.\
 This will allow you to turn the proxy on and off at will.\
 Also make sure to send to turn on the: "Send DNS through SOCKS5 proxy" option.
 
 ![Foxy-Proxy-Setup](images/foxy_proxy_setup.png)
+
+It is suggested to use extensions like UBlock-Origin, to reduce unnecessary traffic through IServ.
 
 ## How it works
 **On the client** this software works by acting as a local Socks5 proxy server.\
