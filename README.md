@@ -21,8 +21,15 @@ It should only be used if you know what you are doing and have permission to do 
 6. Set up your application of choice to connect to the Socks5 server on the client. IP: 127.0.01, Port: 3182 (DO NOT PROXY ALL THE MACHINES TRAFFIC THROUGH ISERV, this will not work with Chromium or any forks, because of this)
 7. Your hopefully done
 
-## How it works
+## How to set up with Firefox
 
+I would suggest using an extension like [FoxyProxy](https://addons.mozilla.org/en-US/firefox/addon/foxyproxy-standard/).\
+This will allow you to turn the proxy on and off at will.\
+Also make sure to send to turn on the: "Send DNS through SOCKS5 proxy" option.
+
+![Foxy-Proxy-Setup](images/foxy_proxy_setup.png)
+
+## How it works
 **On the client** this software works by acting as a local Socks5 proxy server.\
 Any outgoing TCP packets will be uploaded as a file to IServ to a specific directory (encrypted of course).\
 Every few seconds the client will check if there are new files uploaded to the directory, if yes
