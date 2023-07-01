@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
+use base64::Engine;
 use serde::{Serialize, Deserialize};
 
 const ISERV_BASE_URL : &str = "https://hag-iserv.de/iserv";
@@ -211,7 +212,7 @@ pub(crate) async fn delete_files(client : &reqwest::Client, path: &String, file_
         // Create remove requests args
         let mut form_encoded_serializer = form_urlencoded::Serializer::new(String::new());
         for file_name in file_names {
-            form_encoded_serializer.append_pair("form[files][]", &base64::encode(format!("{}/{}", path, file_name)));
+            form_encoded_serializer.append_pair("form[files][]", &base64::engine::general_purpose::STANDARD.encode(format!("{}/{}", path, file_name)));
         }
         form_body = form_encoded_serializer
             .append_pair("form[path]", &path)
