@@ -316,8 +316,7 @@ async fn iserv_data_dir(client: &Client) -> String {
     iserv_data_dir
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
 
     let matches = clap::App::new("IServ Free WiFi")
         .arg(clap::Arg::with_name("server")
@@ -347,48 +346,55 @@ async fn main() {
             .takes_value(true))
         .get_matches();
 
-    if let Some(domain) = matches.value_of("relay") {
-        let dst_port: u16 = matches.value_of("port").unwrap().parse().unwrap();
-        let c = tokio::spawn(async {
-            client::client().await;
-        });
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        relay_to(domain, dst_port).await;
-        c.abort();
-        return;
-    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16777216)
+        .build()
+        .expect("Cannot build tokio runtime");
+    runtime.block_on(async move {
+        if let Some(domain) = matches.value_of("relay") {
+            let dst_port: u16 = matches.value_of("port").unwrap().parse().unwrap();
+            let c = tokio::spawn(async {
+                client::client().await;
+            });
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            relay_to(domain, dst_port).await;
+            c.abort();
+            return;
+        }
 
-    match (matches.is_present("server"), matches.is_present("client")) {
-        (true, false) => {
-            loop {
+        match (matches.is_present("server"), matches.is_present("client")) {
+            (true, false) => {
+                loop {
+                    let s = tokio::spawn(async {
+                        server::server().await;
+                    });
+                    let result = s.await;
+                    match result {
+                        Ok(_) => {break},
+                        Err(e) => eprintln!("[Server] SERVER exited on error: {}, restarting in one Minute", e)
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                }
+            },
+            (false, true) => {
+                let c = tokio::spawn(async {
+                    client::client().await;
+                });
+                c.await.unwrap();
+            },
+            (true, true) => {
                 let s = tokio::spawn(async {
                     server::server().await;
                 });
-                let result = s.await;
-                match result {
-                    Ok(_) => {break},
-                    Err(e) => eprintln!("[Server] SERVER exited on error: {}, restarting in one Minute", e)
-                }
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-            }
-        },
-        (false, true) => {
-            let c = tokio::spawn(async {
-                client::client().await;
-            });
-            c.await.unwrap();
-        },
-        (true, true) => {
-            let s = tokio::spawn(async {
-                server::server().await;
-            });
-            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-            let c = tokio::spawn(async {
-                client::client().await;
-            });
-            s.await.unwrap();
-            c.await.unwrap();
-        },
-        _ => unreachable!()
-    }
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                let c = tokio::spawn(async {
+                    client::client().await;
+                });
+                s.await.unwrap();
+                c.await.unwrap();
+            },
+            _ => unreachable!()
+        }
+    });
 }
