@@ -327,6 +327,13 @@ fn main() {
             .short('c')
             .long("client")
             .takes_value(false))
+        .arg(clap::Arg::with_name("iserv_base")
+            .short('i')
+            .long("iserv-base")
+            .help("The base url for your IServ instance, usually https://<DOMAIN>/iserv")
+            .required(true)
+            .takes_value(true)
+        )
         .arg(clap::Arg::with_name("relay")
             .short('r')
             .long("relay")
@@ -345,6 +352,9 @@ fn main() {
             .value_name("port")
             .takes_value(true))
         .get_matches();
+
+    let Some(iserv_base_url) = matches.value_of("iserv_base") else {panic!("IServ base url was not provided")};
+    iserv::ISERV_BASE_URL.set(iserv_base_url.to_string()).unwrap();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

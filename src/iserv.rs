@@ -3,7 +3,7 @@ use std::time::Duration;
 use base64::Engine;
 use serde::{Serialize, Deserialize};
 
-const ISERV_BASE_URL : &str = "https://***REMOVED***/iserv";
+pub static ISERV_BASE_URL : once_cell::sync::OnceCell<String> = once_cell::sync::OnceCell::new();
 
 pub(crate) async fn get_iserv_client(creds : (String, String)) -> Option<reqwest::Client> {
     for i in 0..10 {
@@ -24,7 +24,7 @@ async fn _get_iserv_client(username : &str, password : &str) -> Option<reqwest::
         .build()
         .unwrap();
 
-    let response = client.post(format!("{}/auth/login", ISERV_BASE_URL))
+    let response = client.post(format!("{}/auth/login", ISERV_BASE_URL.get().expect("IServ base URL was not set")))
         .header("Upgrade-Insecure-Requests", "1")
         .header("Sec-Fetch-Dest", "document")
         .header("Sec-Fetch-Mode", "navigate")
@@ -85,7 +85,7 @@ pub struct FileNamResponse {
 
 pub(crate) async fn get_files(client : &reqwest::Client, path: String) -> Result<GetFilesResponse, String> {
     let start_unix_time_ms = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_millis();
-    let url = format!("{}/file/-/{}?_={}", ISERV_BASE_URL, path, start_unix_time_ms);
+    let url = format!("{}/file/-/{}?_={}", ISERV_BASE_URL.get().expect("IServ base URL was not set"), path, start_unix_time_ms);
     let response = client.get(url)
         .header("Accept","application/json, text/javascript, */*; q=0.01")
         .header("Accept-Encoding", "gzip, deflate, br")
@@ -107,7 +107,7 @@ pub(crate) async fn get_files(client : &reqwest::Client, path: String) -> Result
 }
 
 pub(crate) async fn upload_file(client : &reqwest::Client, path: String, file_name : String, data : &[u8], no_overwrite : bool) -> Result<serde_json::Value, String> {
-    let files_url = format!("{}/file/-/Files/{}", ISERV_BASE_URL, path);
+    let files_url = format!("{}/file/-/Files/{}", ISERV_BASE_URL.get().expect("IServ base URL was not set"), path);
     // Get upload_token
     let response = client.get(files_url)
         .send()
@@ -129,7 +129,7 @@ pub(crate) async fn upload_file(client : &reqwest::Client, path: String, file_na
             .append_pair("path", &path)
             .finish();
 
-        let response = client.post(format!("{}/file/upload/check", ISERV_BASE_URL))
+        let response = client.post(format!("{}/file/upload/check", ISERV_BASE_URL.get().expect("IServ base URL was not set")))
             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             .header("X-Requested-With", "XMLHttpRequest")
             .body(form_encoded)
@@ -155,7 +155,7 @@ pub(crate) async fn upload_file(client : &reqwest::Client, path: String, file_na
         .part("file", reqwest::multipart::Part::bytes(data.to_vec()).file_name(file_name).mime_str("application/octet-stream").unwrap());
 
     // Send Upload request
-    let response = client.post(format!("{}/file/upload", ISERV_BASE_URL))
+    let response = client.post(format!("{}/file/upload", ISERV_BASE_URL.get().expect("IServ base URL was not set")))
         .header("Content-Type", format!("multipart/form-data boundary={}", multipart.boundary()))
         .header("Accept","application/json")
         .header("Accept-Encoding", "gzip, deflate, br")
@@ -177,7 +177,7 @@ pub(crate) async fn upload_file(client : &reqwest::Client, path: String, file_na
 }
 
 pub(crate) async fn download_data(client : &reqwest::Client, iserv_path: &String) -> Result<bytes::Bytes, String> {
-    let download_url = format!("{}{}", ISERV_BASE_URL.replace("/iserv", ""), iserv_path);
+    let download_url = format!("{}{}", ISERV_BASE_URL.get().expect("IServ base URL was not set").replace("/iserv", ""), iserv_path);
     // Send Download request
     let response = client.get(download_url)
         .send()
@@ -194,7 +194,7 @@ pub(crate) async fn download_data(client : &reqwest::Client, iserv_path: &String
 
 pub(crate) async fn delete_files(client : &reqwest::Client, path: &String, file_names : Vec<&String>) -> Result<(), String> {
     let path = path.replace("/iserv/file/-/", "");
-    let files_url = format!("{}/file/-/{}", ISERV_BASE_URL, path);
+    let files_url = format!("{}/file/-/{}", ISERV_BASE_URL.get().expect("IServ base URL was not set"), path);
     // Get form_token
     let response = client.get(files_url)
         .send()
@@ -225,7 +225,7 @@ pub(crate) async fn delete_files(client : &reqwest::Client, path: &String, file_
     }
 
     // Send remove request
-    let response = client.post(format!("{}/file/multiaction", ISERV_BASE_URL))
+    let response = client.post(format!("{}/file/multiaction", ISERV_BASE_URL.get().expect("IServ base URL was not set")))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(form_body)
         .send()
@@ -252,7 +252,7 @@ pub(crate) async fn create_folder_structure(client : &reqwest::Client, path: &St
 
 pub(crate) async fn create_folder(client : &reqwest::Client, path: &String, folder_name : &String) -> Result<(), String> {
     // Get file_factory_token
-    let response = client.get(format!("{}/file/add/folder", ISERV_BASE_URL))
+    let response = client.get(format!("{}/file/add/folder", ISERV_BASE_URL.get().expect("IServ base URL was not set")))
         .send()
         .await
         .or_else(|e| Err(e.to_string()))?;
@@ -270,7 +270,7 @@ pub(crate) async fn create_folder(client : &reqwest::Client, path: &String, fold
         .append_pair("file_factory[submit]", "")
         .finish();
     // Send request to create folder
-    let response = client.post(format!("{}/file/add/folder", ISERV_BASE_URL))
+    let response = client.post(format!("{}/file/add/folder", ISERV_BASE_URL.get().expect("IServ base URL was not set")))
         .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
         .header("X-Requested-With", "XMLHttpRequest")
         .body(form_encoded)

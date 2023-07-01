@@ -17,8 +17,8 @@ I only decided to make this public, so that people can maybe learn something fro
 <AES_ENCRYPTION_KEY>
 ```
 3. Copy the credentials file to both machines
-4. Run `iserv_free_wifi.exe -s` on the server machine. This machine has to be **outside** of the IServ network.
-5. Run `iserv_free_wifi.exe -c` on the client machine. This machine should be **inside** the IServ network (although technically it does not have to be)
+4. Run `iserv_free_wifi.exe -s -i https://<ISERV_DOMAIN>/iserv` on the server machine. This machine has to be **outside** of the IServ network.
+5. Run `iserv_free_wifi.exe -c -i https://<ISERV_DOMAIN>/iserv` on the client machine. This machine should be **inside** the IServ network (although technically it does not have to be)
 6. Set up your application of choice to connect to the Socks5 server on the client. IP: 127.0.01, Port: 3182 (DO NOT PROXY ALL THE MACHINES TRAFFIC THROUGH ISERV, this will not work with Chromium or any forks, because of this)
 7. Your hopefully done
 
